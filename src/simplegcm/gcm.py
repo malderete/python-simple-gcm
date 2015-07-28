@@ -144,25 +144,50 @@ class Options(InnerDictSerializeMixin, object):
 class Result(object):
     """Response from GCM.
 
-    :param result: Indicate the status
-    :type result: bool
-    :param success: A registation token or a topic (multicast)
-    :type success: str
-    :param failure: A registation token or a topic (multicast)
-    :type failure: str
-    :param raw_results: A registation token or a topic (multicast)
-    :type raw_results: str
-    :param response: A registation token or a topic (multicast)
-    :type response: str
+    :param canonical_ids:
+    :type result: 
+    :param multicast_id:
+    :type multicast_id: 
+    :param success:
+    :type success: 
+    :param failure:
+    :type failure: 
+    :param unregistered:
+    :type unregistered: 
+    :param unavailables:
+    :type unavailables: 
+    :param backoff:
+    :type backoff:
+    :param message:
+    :type message:
+    :param raw_result:
+    :type raw_result:
 
     """
-    def __init__(self, result, success, failure,
-                 raw_results, response):
-        self.result = result
+    def __init__(self, canonical_ids=None, multicast_id=None,
+                 success=None, failure=None, unregistered=None,
+                 unavailables=None, backoff=None, message=None,
+                 raw_result=None):
+        self.canonical_ids = canonical_ids
+        self.multicast_id = multicast_id
         self.success = success
         self.failure = failure
-        self.raw_results = raw_results
-        self.response
+        self.unregistered = unregistered
+        self.unavailables = unavailables
+        self.message = message
+        self.backoff = backoff
+        self._raw_result = raw_result
+
+    def get_retry_message(self):
+        """Return a new Message.
+
+        :return: A new message to retry or None.
+        :rtype: :class:`~simplegcm.gcm.Message` or None
+        """
+        if self.unavailables:
+            klass = self.message.__class__
+            return klass.build_retry_message(message, self.unavailables)
+        return None
 
 
 class Message(object):
@@ -182,7 +207,8 @@ class Message(object):
     .. note:: Messages MUST contain 'to' or 'registration_ids' at least
 
     """
-
+    notification_class = Notification
+    options_class = Options
     def __init__(self, to=None, registration_ids=None,
                  data=None, notification=None, options=None):
         if not any((to, registration_ids)):
@@ -201,10 +227,10 @@ class Message(object):
             self._data = data
 
         if notification is not None:
-            self._notif = Notification(**notification)
+            self._notif = self.notification_class(**notification)
 
         if options is not None:
-            self._opt = Options(**options)
+            self._opt = self.options_class(**options)
 
     @property
     def body(self):
@@ -234,6 +260,23 @@ class Message(object):
 
         return payload
 
+    @classmethod
+    def build_retry_message(cls, message, registration_ids):
+        """Return a new Message using the given message as base.
+
+        :return: A new message.
+        :rtype: :class:`~simplegcm.gcm.Message`
+
+        """
+        data = {
+            'registration_ids': registration_ids,
+            'data': message._data,
+            'notification': message._notif.data if message._notif else None,
+            'options': message._opt.data if message._opt else None
+        }
+        retry_msg = cls(**data)
+        return retry_msg
+
 
 class Sender(object):
     """GCM Sender.
@@ -245,11 +288,12 @@ class Sender(object):
     >>> r_ids = ['ABC', 'HJK']
     >>> data = {'score': 5.1}
     >>> opt = {'dry_run': True}
-    >>> message = simplegcm.Message(registration_ids=r_ids, data=data,
-                             options=opt)
+    >>> message = simplegcm.Message(registration_ids=r_ids,
+                                    data=data, options=opt)
     >>> ret = sender.send(message)
-    >>> print(ret.result)
-    True
+    >>> retry_msg = ret.get_retry_message()
+    >>> print(retry_msg)
+    None
 
     :param api_key: Service's API key
     :type api_key: str
@@ -259,6 +303,7 @@ class Sender(object):
     """
 
     GCM_URL = 'https://gcm-http.googleapis.com/gcm/send'
+    result_class = Result
     def __init__(self, api_key=None, url=None):
         self.api_key = api_key
         self.url = self.GCM_URL
@@ -272,40 +317,84 @@ class Sender(object):
         }
         return headers
 
-    def _parse_response(self, response):
-        result = False
-        success = 0
-        failure = 0
+    def _parse_response(self, message, response):
+        r_status = response.status_code
+        if r_status == requests.codes.BAD:
+            # bad request more info in content
+            raise GCMException(response.content)
 
-        if response.status_code == requests.codes.OK:
-            json_response = response.json()
-            result = True
-            success = json_response['success']
-            failure = json_response['failure']
-            raw_results = json_response['results']
-            logger.info('Sent {0}, Failure {1}'.format(success, failure))
-        elif response.status_code == requests.codes.UNAUTHORIZED:
+        if r_status == requests.codes.UNAUTHORIZED:
             # Invalid API key
             raise GCMException('Unauthorized API_KEY')
-        else:
-            # Error
-            logger.error('The response has errors:\n{0}'.format(
-                         response.content))
-            raise GCMException('Error sending GCM notification')
 
-        gcm_result = Result(result, success, failure, raw_results, response)
-        return gcm_result
+        retry_after = response.headers.get('Retry-After')
+        # 5xx family!
+        if (r_status >= 500 and r_status <= 599):
+            # this dict will force a retry
+            # set all the registration_ids as 'UNAVAILABLES'
+            data = {
+                'raw_result': None,
+                'message': message,
+                'canonical_ids': None,
+                'multicast_id': None,
+                'success': {},
+                'failure': {},
+                'unregistered': [],
+                'unavailables': message._registration_ids,
+                'backoff': retry_after
+            }
+        elif r_status == requests.codes.OK:
+            r_ids = message._registration_ids
+            resp_data = response.json()
 
-    def _make_request(self, payload):
-        data = json.dumps(payload)
+            success = {}
+            failure = {}
+            canonical_ids = {}
+            unregistered = []
+            unavailables = []
+
+            for reg_id, resp in zip(r_ids, resp_data['results']):
+                if 'message_id' in resp:
+                    success[reg_id] = resp['message_id']
+                    if 'registration_id' in resp:
+                        # new token for reg_id
+                        canonical_ids[reg_id] = resp['registration_id']
+                else:
+                    error = resp['error']
+                    if error in ('Unavailable', 'InternalServerError'):
+                        unavailables.append(reg_id)
+                    elif error == 'NotRegistered':
+                        unregistered.append(reg_id)
+                    else:
+                        failure[reg_id] = error
+
+            data = {
+                # HTTP response
+                'raw_result': resp_data,
+                'message': message,
+                # GCM fields
+                'canonical_ids': resp_data['canonical_ids'],
+                'multicast_id': resp_data['multicast_id'],
+                'success': success,
+                'failure': failure,
+                'unregistered': unregistered,
+                'unavailables': unavailables,
+                'backoff': retry_after
+            }
+        return data
+
+    def _make_request(self, message):
+        payload = self._build_payload(message)
         headers = self._build_headers()
+        data = json.dumps(payload)
         try:
-            ret = requests.post(self.url, data, headers=headers)
+            response = requests.post(self.url, data, headers=headers)
         except Exception as e:
             logger.error(e)
             raise
         else:
-            gcm_result = self._parse_response(ret)
+            result_data = self._parse_response(message, response)
+            gcm_result = self.result_class(**result_data)
         return gcm_result
 
     def _build_payload(self, message):
@@ -323,5 +412,4 @@ class Sender(object):
         if self.api_key is None:
             raise ValueError('The API KEY has not been set yet!')
 
-        payload = self._build_payload(message)
-        return self._make_request(payload)
+        return self._make_request(message)
