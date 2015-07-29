@@ -12,17 +12,12 @@ This module implements the Google Cloud Service API.
 
 import collections
 import json
-import logging
 
 import requests
 
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-
-
 __all__ = ('GCMException', 'Message', 'Notification',
-           'Options', 'Sender')
+           'Result', 'Options', 'Sender')
 
 
 class GCMException(Exception):
@@ -144,8 +139,8 @@ class Options(InnerDictSerializeMixin, object):
 class Result(object):
     """Response from GCM.
 
-    :param canonical_ids: Map with old token and new token
-    :type result: dict
+    :param canonicals: Map with old token and new token
+    :type canonicals: dict
     :param multicast_id: Unique ID (number) identifying the multicast message.
     :type multicast_id: int
     :param success: Map registration_id with message_id successfully sent.
@@ -164,11 +159,11 @@ class Result(object):
     :type raw_result: dict
 
     """
-    def __init__(self, canonical_ids=None, multicast_id=None,
+    def __init__(self, canonicals=None, multicast_id=None,
                  success=None, failure=None, unregistered=None,
                  unavailables=None, backoff=None, message=None,
                  raw_result=None):
-        self.canonical_ids = canonical_ids
+        self.canonicals = canonicals
         self.multicast_id = multicast_id
         self.success = success
         self.failure = failure
@@ -186,7 +181,7 @@ class Result(object):
         """
         if self.unavailables:
             klass = self.message.__class__
-            return klass.build_retry_message(message, self.unavailables)
+            return klass.build_retry_message(self.message, self.unavailables)
         return None
 
 
@@ -304,7 +299,6 @@ class Sender(object):
     :type url: str
 
     """
-
     GCM_URL = 'https://gcm-http.googleapis.com/gcm/send'
     result_class = Result
     def __init__(self, api_key=None, url=None):
@@ -338,7 +332,7 @@ class Sender(object):
             data = {
                 'raw_result': None,
                 'message': message,
-                'canonical_ids': None,
+                'canonicals': None,
                 'multicast_id': None,
                 'success': {},
                 'failure': {},
@@ -352,7 +346,7 @@ class Sender(object):
 
             success = {}
             failure = {}
-            canonical_ids = {}
+            canonicals = {}
             unregistered = []
             unavailables = []
 
@@ -361,7 +355,7 @@ class Sender(object):
                     success[reg_id] = resp['message_id']
                     if 'registration_id' in resp:
                         # new token for reg_id
-                        canonical_ids[reg_id] = resp['registration_id']
+                        canonicals[reg_id] = resp['registration_id']
                 else:
                     error = resp['error']
                     if error in ('Unavailable', 'InternalServerError'):
@@ -376,7 +370,7 @@ class Sender(object):
                 'raw_result': resp_data,
                 'message': message,
                 # GCM fields
-                'canonical_ids': resp_data['canonical_ids'],
+                'canonicals': canonicals,
                 'multicast_id': resp_data['multicast_id'],
                 'success': success,
                 'failure': failure,
@@ -393,7 +387,6 @@ class Sender(object):
         try:
             response = requests.post(self.url, data, headers=headers)
         except Exception as e:
-            logger.error(e)
             raise
         else:
             result_data = self._parse_response(message, response)

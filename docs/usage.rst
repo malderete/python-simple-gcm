@@ -19,3 +19,17 @@ To use python-simple-gcm in a project::
         ret = g.send(retry_msg)
     else:
         print('All sent!')
+
+
+Process the results::
+
+    result = g.send(m)
+    # Update the token because GCM told us we sent some old tokens.
+    for reg_id, new_token in result.canonicals.items():
+        update_device_token(reg_id, new_token)
+
+    # Clean the tokens because are not registered in our app.
+    for reg_id i result.unregistered:
+        remove_token(reg_id)
+
+In the example above 'update_device_token' and 'remove_token' show the idea behind the result processing. Those are not part of python-simple-gcm.
