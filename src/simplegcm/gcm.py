@@ -144,24 +144,24 @@ class Options(InnerDictSerializeMixin, object):
 class Result(object):
     """Response from GCM.
 
-    :param canonical_ids:
-    :type result: 
-    :param multicast_id:
-    :type multicast_id: 
-    :param success:
-    :type success: 
-    :param failure:
-    :type failure: 
-    :param unregistered:
-    :type unregistered: 
-    :param unavailables:
-    :type unavailables: 
-    :param backoff:
-    :type backoff:
-    :param message:
-    :type message:
-    :param raw_result:
-    :type raw_result:
+    :param canonical_ids: Map with old token and new token
+    :type result: dict
+    :param multicast_id: Unique ID (number) identifying the multicast message.
+    :type multicast_id: int
+    :param success: Map registration_id with message_id successfully sent.
+    :type success: dict
+    :param failure: Map registration_id with error message.
+    :type failure: dict
+    :param unregistered: List with registration_ids not registered.
+    :type unregistered: list
+    :param unavailables: List with registration_ids to re-send.
+    :type unavailables: list
+    :param backoff: Estimated time to wait before retry.
+    :type backoff: int
+    :param message: Related message.
+    :type message: :class:`~simplegcm.gcm.Message`
+    :param raw_result: JSON returned by GCM server.
+    :type raw_result: dict
 
     """
     def __init__(self, canonical_ids=None, multicast_id=None,
@@ -292,8 +292,11 @@ class Sender(object):
                                     data=data, options=opt)
     >>> ret = sender.send(message)
     >>> retry_msg = ret.get_retry_message()
-    >>> print(retry_msg)
-    None
+    >>> if retry_msg:
+    >>>     print('Retry')
+    >>>     ret = g.send(retry_msg)
+    >>> else:
+    >>>     print('All sent!')
 
     :param api_key: Service's API key
     :type api_key: str

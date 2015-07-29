@@ -13,3 +13,9 @@ To use python-simple-gcm in a project::
     message = simplegcm.Message(registration_ids=r_ids,
                                 data=data, options=opt)
     ret = sender.send(message)
+    retry_msg = ret.get_retry_message()
+    if retry_msg:
+        print('Retry')
+        ret = g.send(retry_msg)
+    else:
+        print('All sent!')
