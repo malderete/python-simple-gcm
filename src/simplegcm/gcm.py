@@ -10,7 +10,6 @@ This module implements the Google Cloud Service API.
 
 """
 
-import collections
 import json
 
 import requests
@@ -78,6 +77,7 @@ class Notification(InnerDictSerializeMixin, object):
         'android': ('title', 'icon'),
         'ios': ()
     }
+
     def __init__(self, title=None, body=None, icon=None, sound=None,
                  badge=None, tag=None, color=None, click_action=None,
                  body_loc_key=None, body_loc_args=None,
@@ -204,6 +204,7 @@ class Message(object):
     """
     notification_class = Notification
     options_class = Options
+
     def __init__(self, to=None, registration_ids=None,
                  data=None, notification=None, options=None):
         if not any((to, registration_ids)):
@@ -301,6 +302,7 @@ class Sender(object):
     """
     GCM_URL = 'https://gcm-http.googleapis.com/gcm/send'
     result_class = Result
+
     def __init__(self, api_key=None, url=None):
         self.api_key = api_key
         self.url = self.GCM_URL
@@ -384,13 +386,10 @@ class Sender(object):
         payload = self._build_payload(message)
         headers = self._build_headers()
         data = json.dumps(payload)
-        try:
-            response = requests.post(self.url, data, headers=headers)
-        except Exception as e:
-            raise
-        else:
-            result_data = self._parse_response(message, response)
-            gcm_result = self.result_class(**result_data)
+
+        response = requests.post(self.url, data, headers=headers)
+        result_data = self._parse_response(message, response)
+        gcm_result = self.result_class(**result_data)
         return gcm_result
 
     def _build_payload(self, message):
